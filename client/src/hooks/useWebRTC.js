@@ -5,210 +5,178 @@ const ICE_SERVERS = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
-// ── Compress JSON → base64 string ──
-async function encodeSignal(obj) {
-  const json = JSON.stringify(obj);
-  const stream = new CompressionStream("gzip");
-  const writer = stream.writable.getWriter();
-  writer.write(new TextEncoder().encode(json));
-  writer.close();
-  const compressed = await new Response(stream.readable).arrayBuffer();
-  return btoa(String.fromCharCode(...new Uint8Array(compressed)));
-}
-
-// ── base64 → decompress → JSON ──
-async function decodeSignal(b64) {
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  const stream = new DecompressionStream("gzip");
-  const writer = stream.writable.getWriter();
-  writer.write(bytes);
-  writer.close();
-  const text = await new Response(stream.readable).text();
-  return JSON.parse(text);
-}
-
 export function useWebRTC() {
-  const pcRef = useRef(null);
-  const localStream = useRef(null);
-  const remoteStream = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const localMediaStreamRef = useRef(null);
+  const remoteMediaStreamRef = useRef(null);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
-  const [phase, setPhase] = useState("idle");
-  const [localSignal, setLocalSignal] = useState("");
-  const [candidates, setCandidates] = useState([]);
-  const [gathered, setGathered] = useState(false);
+  const [connectionState, setConnectionState] = useState("idle");
+  const [signalData, setSignalData] = useState("");
+  const [iceCandidates, setIceCandidates] = useState([]);
+  const [isGatheringComplete, setIsGatheringComplete] = useState(false);
   const [error, setError] = useState("");
 
-  // ── Attach streams to video elements whenever phase changes ──
+  // Attach streams
   useEffect(() => {
-    console.log("[WebRTC] phase →", phase);
-    if (localVideoRef.current && localStream.current) {
-      console.log("[WebRTC] attaching local stream to video");
-      localVideoRef.current.srcObject = localStream.current;
+    if (localVideoRef.current && localMediaStreamRef.current) {
+      localVideoRef.current.srcObject = localMediaStreamRef.current;
     }
-    if (remoteVideoRef.current && remoteStream.current) {
-      console.log("[WebRTC] attaching remote stream to video");
-      remoteVideoRef.current.srcObject = remoteStream.current;
+    if (remoteVideoRef.current && remoteMediaStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteMediaStreamRef.current;
     }
-  }, [phase]);
+  }, [connectionState]);
 
-  // ── Build + encode signal once all ICE candidates gathered ──
+  // Build signal JSON
   useEffect(() => {
-    if (!gathered || !pcRef.current) return;
+    if (!isGatheringComplete || !peerConnectionRef.current) return;
+
     const signal = {
-      sdp: pcRef.current.localDescription,
-      candidates,
+      sdp: peerConnectionRef.current.localDescription,
+      candidates: iceCandidates,
     };
-    console.log("[WebRTC] gathering complete, candidates:", candidates.length);
-    encodeSignal(signal).then((encoded) => {
-      setLocalSignal(encoded);
-      setPhase("ready");
-    });
-  }, [gathered, candidates]);
 
-  // ── Get camera + mic ──
-  const getMedia = async () => {
-    console.log("[WebRTC] requesting camera and mic...");
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    console.log("[WebRTC] got local stream, tracks:", stream.getTracks().map((t) => t.kind));
-    localStream.current = stream;
+    setSignalData(JSON.stringify(signal, null, 2));
+    setConnectionState("ready");
+  }, [isGatheringComplete, iceCandidates]);
+
+  // Get media
+  const getUserMediaStream = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+
+    localMediaStreamRef.current = stream;
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
-      console.log("[WebRTC] local video attached immediately");
     }
+
     return stream;
   };
 
-  // ── Create RTCPeerConnection ──
-  const createPC = (stream) => {
-    console.log("[WebRTC] creating RTCPeerConnection");
+  // Create peer connection
+  const createPeerConnection = (stream) => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    pcRef.current = pc;
+    peerConnectionRef.current = pc;
 
-    stream.getTracks().forEach((t) => {
-      pc.addTrack(t, stream);
-      console.log("[WebRTC] added local track:", t.kind);
+    stream.getTracks().forEach((track) => {
+      pc.addTrack(track, stream);
     });
 
-    pc.ontrack = (e) => {
-      console.log("[WebRTC] ontrack! kind:", e.track.kind, "streams:", e.streams.length);
-      remoteStream.current = e.streams[0];
+    pc.ontrack = (event) => {
+      remoteMediaStreamRef.current = event.streams[0];
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = e.streams[0];
-        console.log("[WebRTC] remote video attached immediately");
-      } else {
-        console.log("[WebRTC] remoteVideoRef null — will attach after phase change");
+        remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        console.log("[WebRTC] ICE candidate:", e.candidate.type, e.candidate.protocol);
-        setCandidates((prev) => [...prev, e.candidate.toJSON()]);
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        setIceCandidates((prev) => [...prev, event.candidate.toJSON()]);
       }
     };
 
     pc.onicegatheringstatechange = () => {
-      console.log("[WebRTC] iceGatheringState →", pc.iceGatheringState);
-      if (pc.iceGatheringState === "complete") setGathered(true);
+      if (pc.iceGatheringState === "complete") {
+        setIsGatheringComplete(true);
+      }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log("[WebRTC] connectionState →", pc.connectionState);
-      if (pc.connectionState === "connected")    setPhase("connected");
-      if (pc.connectionState === "failed")       setPhase("failed");
-      if (pc.connectionState === "disconnected") setPhase("failed");
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log("[WebRTC] iceConnectionState →", pc.iceConnectionState);
-    };
-
-    pc.onsignalingstatechange = () => {
-      console.log("[WebRTC] signalingState →", pc.signalingState);
+      if (pc.connectionState === "connected") {
+        setConnectionState("connected");
+      }
+      if (["failed", "disconnected"].includes(pc.connectionState)) {
+        setConnectionState("failed");
+      }
     };
 
     return pc;
   };
 
-  // ── CALLER: create offer ──
-  const startCreate = useCallback(async () => {
+  // CREATE CALL
+  const createOffer = useCallback(async () => {
     try {
-      console.log("[WebRTC] === CALLER START ===");
       setError("");
-      setPhase("gathering");
-      const stream = await getMedia();
-      const pc = createPC(stream);
+      setConnectionState("gathering");
+
+      const stream = await getUserMediaStream();
+      const pc = createPeerConnection(stream);
+
       const offer = await pc.createOffer();
-      console.log("[WebRTC] offer created, setting localDescription...");
       await pc.setLocalDescription(offer);
     } catch (e) {
-      console.error("[WebRTC] startCreate error:", e);
       setError(e.message);
-      setPhase("idle");
+      setConnectionState("idle");
     }
   }, []);
 
-  // ── CALLER: accept joiner's answer ──
-  const acceptAnswer = useCallback(async (raw) => {
+  // APPLY ANSWER
+  const applyAnswer = useCallback(async (raw) => {
     try {
-      console.log("[WebRTC] === ACCEPTING ANSWER ===");
-      const { sdp, candidates } = await decodeSignal(raw.trim());
-      const pc = pcRef.current;
-      console.log("[WebRTC] setting remoteDescription (answer)...");
+      const { sdp, candidates } = JSON.parse(raw);
+
+      const pc = peerConnectionRef.current;
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      console.log("[WebRTC] adding", candidates.length, "remote ICE candidates...");
-      for (const c of candidates) await pc.addIceCandidate(new RTCIceCandidate(c));
-      console.log("[WebRTC] done — waiting for connectionState: connected");
+
+      for (const c of candidates) {
+        await pc.addIceCandidate(new RTCIceCandidate(c));
+      }
     } catch (e) {
-      console.error("[WebRTC] acceptAnswer error:", e);
-      setError("Bad signal: " + e.message);
+      setError("Invalid answer file");
     }
   }, []);
 
-  // ── JOINER: paste offer, generate answer ──
-  const startJoin = useCallback(async (raw) => {
+  // JOIN CALL
+  const joinWithOffer = useCallback(async (raw) => {
     try {
-      console.log("[WebRTC] === JOINER START ===");
       setError("");
-      setPhase("gathering");
-      const { sdp, candidates: remoteCandidates } = await decodeSignal(raw.trim());
-      const stream = await getMedia();
-      const pc = createPC(stream);
-      console.log("[WebRTC] setting remoteDescription (offer)...");
+      setConnectionState("gathering");
+
+      const { sdp, candidates } = JSON.parse(raw);
+
+      const stream = await getUserMediaStream();
+      const pc = createPeerConnection(stream);
+
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      console.log("[WebRTC] adding", remoteCandidates.length, "remote candidates...");
-      for (const c of remoteCandidates) await pc.addIceCandidate(new RTCIceCandidate(c));
+
+      for (const c of candidates) {
+        await pc.addIceCandidate(new RTCIceCandidate(c));
+      }
+
       const answer = await pc.createAnswer();
-      console.log("[WebRTC] answer created, setting localDescription...");
       await pc.setLocalDescription(answer);
     } catch (e) {
-      console.error("[WebRTC] startJoin error:", e);
-      setError(e.message);
-      setPhase("idle");
+      setError("Invalid offer file");
+      setConnectionState("idle");
     }
   }, []);
 
-  // ── Hang up ──
   const hangUp = useCallback(() => {
-    console.log("[WebRTC] hanging up");
-    pcRef.current?.close();
-    localStream.current?.getTracks().forEach((t) => t.stop());
-    if (localVideoRef.current)  localVideoRef.current.srcObject  = null;
+    peerConnectionRef.current?.close();
+    localMediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    localStream.current  = null;
-    remoteStream.current = null;
-    setPhase("idle");
-    setLocalSignal("");
-    setCandidates([]);
-    setGathered(false);
+
+    setConnectionState("idle");
+    setSignalData("");
+    setIceCandidates([]);
+    setIsGatheringComplete(false);
   }, []);
 
   return {
-    localVideoRef, remoteVideoRef,
-    phase, localSignal, error,
-    startCreate, startJoin, acceptAnswer, hangUp,
+    localVideoRef,
+    remoteVideoRef,
+    connectionState,
+    signalData,
+    error,
+    createOffer,
+    joinWithOffer,
+    applyAnswer,
+    hangUp,
   };
 }

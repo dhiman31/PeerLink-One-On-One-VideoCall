@@ -1,7 +1,7 @@
 import { Routes, Route } from "react-router-dom";
-import Home from "./pages/Home.jsx";
-import Create from "./pages/Create.jsx";
-import Join from "./pages/Join.jsx";
+import Home from "./pages/Home";
+import Create from "./pages/Create";
+import Join from "./pages/Join";
 
 export default function App() {
   return (

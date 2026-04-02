@@ -1,0 +1,17 @@
+/* home.css */
+
+.home-title {
+  font-size: 36px;
+  margin-bottom: 10px;
+}
+
+.home-sub {
+  color: #9ca3af;
+  margin-bottom: 30px;
+}
+
+.home-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
