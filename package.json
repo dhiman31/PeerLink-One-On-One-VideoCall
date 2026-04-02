@@ -1,0 +1,12 @@
+{
+  "name": "webrtc-simple",
+  "scripts": {
+    "setup": "cd client && npm install",
+    "dev": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "http": "^0.0.1-security"
+  }
+}
